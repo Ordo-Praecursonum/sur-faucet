@@ -19,6 +19,16 @@ cp .env.example .env    # then set FAUCET_MNEMONIC to a FUNDED account's mnemoni
 `FAUCET_MNEMONIC` must be an account that holds SUR on the target chain (e.g. a
 funded local account). All other settings have local-chain defaults.
 
+### Production faucet address
+
+The account backing https://faucet.surprotocol.org/ is:
+
+```
+sur1pn3clklw4eng56pt2auln8ywt42vk4977run0q
+```
+
+Fund this address to keep the live faucet stocked.
+
 ## Run
 
 Dev (frontend + API together, with hot reload):
