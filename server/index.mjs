@@ -29,6 +29,7 @@ const GAS_PRICE = process.env.GAS_PRICE || `0.025${DENOM}`
 const GAS_LIMIT = Number(process.env.GAS_LIMIT || 200000)
 const EXPLORER_URL = process.env.EXPLORER_URL || 'http://localhost:5173'
 const MNEMONIC = process.env.FAUCET_MNEMONIC
+const X_BEARER_TOKEN = process.env.X_BEARER_TOKEN
 
 if (!MNEMONIC) {
   console.error(
@@ -122,8 +123,25 @@ function parsePost(url) {
   return m ? { handle: m[1], id: m[2] } : null
 }
 
-// Verify a post mentions @SurProtocol via X's public oEmbed (no auth needed).
-async function postMentionsHandle(url) {
+// Verify a post mentions @SurProtocol using the actual tweet text via the X
+// API v2 (requires X_BEARER_TOKEN). Falls back to X's public oEmbed endpoint
+// (no auth, but only sees rendered HTML) if the API is unavailable — e.g. the
+// token's access tier doesn't include read endpoints.
+async function postMentionsHandleViaApi(id) {
+  const endpoint = `https://api.twitter.com/2/tweets/${id}?tweet.fields=text`
+  const res = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` },
+  })
+  if (res.status === 429) return { reachable: false, mentions: false }
+  if (!res.ok) return null // not usable — let caller fall back to oEmbed
+  const data = await res.json()
+  if (!data?.data?.text) return { reachable: false, mentions: false }
+  const needle = X_HANDLE.replace(/^@/, '').toLowerCase()
+  const mentions = data.data.text.toLowerCase().includes(`@${needle}`)
+  return { reachable: true, mentions }
+}
+
+async function postMentionsHandleViaOembed(url) {
   const normalized = url.replace('://x.com', '://twitter.com')
   const endpoint = `https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=${encodeURIComponent(
     normalized
@@ -138,6 +156,14 @@ async function postMentionsHandle(url) {
   }`.toLowerCase()
   const needle = X_HANDLE.replace(/^@/, '').toLowerCase()
   return { reachable: true, mentions: haystack.includes(needle) }
+}
+
+async function postMentionsHandle(url, id) {
+  if (X_BEARER_TOKEN) {
+    const viaApi = await postMentionsHandleViaApi(id)
+    if (viaApi) return viaApi
+  }
+  return postMentionsHandleViaOembed(url)
 }
 
 const app = express()
@@ -225,7 +251,7 @@ app.post('/api/share-claim', async (req, res) => {
   // Verify the post actually mentions @SurProtocol.
   let check
   try {
-    check = await postMentionsHandle(postUrl)
+    check = await postMentionsHandle(postUrl, post.id)
   } catch {
     check = { reachable: false, mentions: false }
   }
