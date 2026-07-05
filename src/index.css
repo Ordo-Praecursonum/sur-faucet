@@ -41,11 +41,18 @@
   box-sizing: border-box;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 html,
 body,
 #root {
   height: 100%;
   margin: 0;
+  width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -55,6 +62,7 @@ body {
   -webkit-font-smoothing: antialiased;
   background: var(--page-bg);
   background-attachment: fixed;
+  touch-action: manipulation;
   transition:
     background 0.4s ease,
     color 0.3s ease;
@@ -173,7 +181,9 @@ label {
   border-radius: 14px;
   padding: 14px 14px;
   color: var(--text);
-  font-size: 14px;
+  /* Keep >=16px: iOS Safari force-zooms the viewport on focus for any
+     input with a smaller computed font-size. */
+  font-size: 16px;
   font-family: 'IBM Plex Mono', monospace;
   outline: none;
   transition:
@@ -198,6 +208,7 @@ label {
   font-weight: 700;
   color: #fff;
   cursor: pointer;
+  touch-action: manipulation;
   background: linear-gradient(135deg, var(--orange-deep), var(--orange) 60%, var(--amber));
   box-shadow: 0 10px 30px -10px rgba(242, 100, 25, 0.7);
   transition:
@@ -422,5 +433,38 @@ label {
   .card,
   .banner {
     animation: none;
+  }
+}
+
+/* Compact phones: tighten spacing so the card sits comfortably without any
+   horizontal overflow or oversized type. */
+@media (max-width: 420px) {
+  .shell {
+    padding: 14px;
+  }
+  .card {
+    padding: 26px 20px 22px;
+    border-radius: 22px;
+  }
+  .theme-toggle {
+    top: 16px;
+    right: 16px;
+  }
+  .brand img {
+    width: 38px;
+    height: 38px;
+  }
+  .headline {
+    font-size: 22px;
+  }
+  .lede {
+    font-size: 13.5px;
+  }
+  .sample-actions {
+    flex-wrap: wrap;
+  }
+  .btn-ghost,
+  .btn-x {
+    flex: 1 1 auto;
   }
 }

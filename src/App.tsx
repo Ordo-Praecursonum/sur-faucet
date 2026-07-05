@@ -98,7 +98,11 @@ export default function App() {
   const valid = new RegExp(`^${prefix}1[0-9a-z]{20,}$`).test(address.trim())
 
   const claim = async () => {
-    if (!valid) return
+    if (!address.trim()) return
+    if (!valid) {
+      setStatus({ kind: 'error', message: `Enter a valid ${prefix}1… address.` })
+      return
+    }
     setStatus({ kind: 'loading' })
     try {
       const res = await fetch('/api/claim', {
@@ -142,7 +146,14 @@ export default function App() {
     setSample((s) => (s + 1) % SAMPLE_POSTS.length)
 
   const claimShare = async () => {
-    if (!valid || !postUrl.trim()) return
+    if (!postUrl.trim()) return
+    if (!valid) {
+      setShare({
+        kind: 'error',
+        message: `Enter a valid ${prefix}1… address above first.`,
+      })
+      return
+    }
     setShare({ kind: 'loading' })
     try {
       const res = await fetch('/api/share-claim', {
@@ -213,8 +224,10 @@ export default function App() {
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
+          inputMode="text"
+          autoComplete="off"
           onChange={(e) => {
-            setAddress(e.target.value)
+            setAddress(e.target.value.toLowerCase())
             if (status.kind !== 'idle' && status.kind !== 'loading')
               setStatus({ kind: 'idle' })
           }}
@@ -224,7 +237,7 @@ export default function App() {
         <button
           className="btn"
           onClick={claim}
-          disabled={!valid || status.kind === 'loading'}
+          disabled={!address.trim() || status.kind === 'loading'}
         >
           {status.kind === 'loading' ? (
             <>
@@ -326,7 +339,7 @@ export default function App() {
           <button
             className="btn"
             onClick={claimShare}
-            disabled={!valid || !postUrl.trim() || share.kind === 'loading'}
+            disabled={!postUrl.trim() || share.kind === 'loading'}
           >
             {share.kind === 'loading' ? (
               <>
