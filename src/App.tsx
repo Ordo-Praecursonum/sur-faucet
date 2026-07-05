@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 interface Info {
   amount: number
   shareAmount: number
+  videoShareAmount: number
+  maxPostAgeMinutes: number
   xHandle: string
   denom: string
   faucetAddress: string
@@ -48,7 +50,7 @@ const SAMPLE_POSTS: string[] = [
 type Status =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'success'; txHash: string }
+  | { kind: 'success'; txHash: string; amount?: number; video?: boolean }
   | { kind: 'cooldown'; retryAfterMs: number }
   | { kind: 'error'; message: string }
 
@@ -163,7 +165,12 @@ export default function App() {
       })
       const data = await res.json()
       if (res.ok) {
-        setShare({ kind: 'success', txHash: data.txHash })
+        setShare({
+          kind: 'success',
+          txHash: data.txHash,
+          amount: data.amount,
+          video: data.video,
+        })
       } else if (res.status === 429) {
         setShare({ kind: 'cooldown', retryAfterMs: data.retryAfterMs ?? 0 })
       } else {
@@ -288,7 +295,7 @@ export default function App() {
             aria-expanded={bonusOpen}
           >
             <span className="mini-label">
-              Earn {info ? `${info.shareAmount} ${info.denom}` : '20 SUR'} more
+              Earn {info ? `${info.shareAmount}–${info.videoShareAmount} ${info.denom}` : '20–100 SUR'} more
             </span>
             <svg
               className={`chev ${bonusOpen ? 'open' : ''}`}
@@ -308,8 +315,15 @@ export default function App() {
             <div className="bonus-body">
               <p className="lede small">
             Post about Sur mentioning{' '}
-            <span className="amount">{info?.xHandle ?? '@SurProtocol'}</span>,
-            then paste your post link to claim. Each post works once.
+            <span className="amount">{info?.xHandle ?? '@SurProtocol'}</span>{' '}
+            within the last{' '}
+            {info ? Math.round(info.maxPostAgeMinutes) : 60} minutes, then paste
+            your post link to claim{' '}
+            {info ? `${info.shareAmount} ${info.denom}` : '20 SUR'} — or{' '}
+            <span className="amount">
+              {info ? `${info.videoShareAmount} ${info.denom}` : '100 SUR'}
+            </span>{' '}
+            if your post includes a video. Each post works once.
           </p>
 
           <div className="sample">{SAMPLE_POSTS[sample]}</div>
@@ -347,14 +361,15 @@ export default function App() {
                 Verifying post…
               </>
             ) : (
-              `Claim ${info ? `${info.shareAmount} ${info.denom}` : '20 SUR'}`
+              `Claim ${info ? `${info.shareAmount}–${info.videoShareAmount} ${info.denom}` : '20–100 SUR'}`
             )}
           </button>
 
           {share.kind === 'success' && (
             <div className="banner success">
               <div className="row">
-                ✅&nbsp;Bonus sent! {info?.shareAmount} {info?.denom} on the way.
+                {share.video ? '🎥' : '✅'}&nbsp;Bonus sent! {share.amount ?? info?.shareAmount}{' '}
+                {info?.denom} on the way{share.video ? ' — video bonus!' : ''}.
               </div>
               {info?.explorerUrl && (
                 <div style={{ marginTop: 6 }}>

@@ -18,6 +18,11 @@ const DISPLAY_DENOM = process.env.DISPLAY_DENOM || 'SUR'
 const EXPONENT = Number(process.env.EXPONENT || 6)
 const AMOUNT = Number(process.env.AMOUNT || 10) // SUR per base claim
 const SHARE_AMOUNT = Number(process.env.SHARE_AMOUNT || 20) // SUR per verified share
+const SHARE_VIDEO_AMOUNT = Number(process.env.SHARE_VIDEO_AMOUNT || 100) // SUR when the post includes a video
+// 0 disables the freshness check. Only enforced when the post's real creation
+// time is known (authenticated API or the syndication fallback) — the oEmbed
+// fallback has no timestamp precision, so age is left unchecked there.
+const SHARE_MAX_AGE_MINUTES = Number(process.env.SHARE_MAX_AGE_MINUTES || 60)
 const X_HANDLE = process.env.X_HANDLE || '@SurProtocol'
 const PREFIX = process.env.ADDRESS_PREFIX || 'sur'
 const COOLDOWN_MS = Number(process.env.COOLDOWN_HOURS || 24) * 3600 * 1000
@@ -123,24 +128,49 @@ function parsePost(url) {
   return m ? { handle: m[1], id: m[2] } : null
 }
 
-// Verify a post mentions @SurProtocol using the actual tweet text via the X
-// API v2 (requires X_BEARER_TOKEN). Falls back to X's public oEmbed endpoint
-// (no auth, but only sees rendered HTML) if the API is unavailable — e.g. the
-// token's access tier doesn't include read endpoints.
+const mentionsNeedle = () => `@${X_HANDLE.replace(/^@/, '').toLowerCase()}`
+
+// Three ways to read a post, tried in order of quality. Each either returns
+// a definitive { reachable, mentions, createdAt, hasVideo } result, or `null`
+// to mean "inconclusive, try the next one" (access tier issue, transient
+// error, etc — not proof the post doesn't exist).
+
+// Best: the official API, gives exact text + timestamp + media. Needs
+// X_BEARER_TOKEN with read access (a paid tier at the time of writing).
 async function postMentionsHandleViaApi(id) {
-  const endpoint = `https://api.twitter.com/2/tweets/${id}?tweet.fields=text`
+  const endpoint = `https://api.twitter.com/2/tweets/${id}?tweet.fields=text,created_at,attachments&expansions=attachments.media_keys&media.fields=type`
   const res = await fetch(endpoint, {
     headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` },
   })
-  if (res.status === 429) return { reachable: false, mentions: false }
-  if (!res.ok) return null // not usable — let caller fall back to oEmbed
+  if (res.status === 429) return { reachable: false, mentions: false, createdAt: null, hasVideo: false }
+  if (!res.ok) return null // access issue — let caller try the next method
   const data = await res.json()
-  if (!data?.data?.text) return { reachable: false, mentions: false }
-  const needle = X_HANDLE.replace(/^@/, '').toLowerCase()
-  const mentions = data.data.text.toLowerCase().includes(`@${needle}`)
-  return { reachable: true, mentions }
+  if (!data?.data?.text) return { reachable: false, mentions: false, createdAt: null, hasVideo: false }
+  const mentions = data.data.text.toLowerCase().includes(mentionsNeedle())
+  const createdAt = data.data.created_at ? new Date(data.data.created_at) : null
+  const media = data.includes?.media || []
+  const hasVideo = media.some((m) => m.type === 'video' || m.type === 'animated_gif')
+  return { reachable: true, mentions, createdAt, hasVideo }
 }
 
+// Good: X's undocumented syndication endpoint (what widgets.js and tools like
+// react-tweet use under the hood). No auth, but unofficial — could change or
+// get rate-limited without notice, hence the oEmbed fallback below it.
+async function postMentionsHandleViaSyndication(id) {
+  const endpoint = `https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=1`
+  const res = await fetch(endpoint, { headers: { 'User-Agent': 'SurFaucet/1.0' } })
+  if (!res.ok) return null // let caller try oEmbed
+  const data = await res.json()
+  if (!data?.text) return null
+  const mentions = data.text.toLowerCase().includes(mentionsNeedle())
+  const createdAt = data.created_at ? new Date(data.created_at) : null
+  const media = Array.isArray(data.mediaDetails) ? data.mediaDetails : []
+  const hasVideo = media.some((m) => m.type === 'video' || m.type === 'animated_gif')
+  return { reachable: true, mentions, createdAt, hasVideo }
+}
+
+// Last resort: public oEmbed. Only sees rendered HTML, so no reliable
+// timestamp or media type — createdAt/hasVideo are always unknown here.
 async function postMentionsHandleViaOembed(url) {
   const normalized = url.replace('://x.com', '://twitter.com')
   const endpoint = `https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=${encodeURIComponent(
@@ -149,13 +179,17 @@ async function postMentionsHandleViaOembed(url) {
   const res = await fetch(endpoint, {
     headers: { 'User-Agent': 'SurFaucet/1.0' },
   })
-  if (!res.ok) return { reachable: false, mentions: false }
+  if (!res.ok) return { reachable: false, mentions: false, createdAt: null, hasVideo: false }
   const data = await res.json()
   const haystack = `${data.html || ''} ${data.author_name || ''} ${
     data.author_url || ''
   }`.toLowerCase()
-  const needle = `@${X_HANDLE.replace(/^@/, '').toLowerCase()}`
-  return { reachable: true, mentions: haystack.includes(needle) }
+  return {
+    reachable: true,
+    mentions: haystack.includes(mentionsNeedle()),
+    createdAt: null,
+    hasVideo: false,
+  }
 }
 
 async function postMentionsHandle(url, id) {
@@ -163,6 +197,8 @@ async function postMentionsHandle(url, id) {
     const viaApi = await postMentionsHandleViaApi(id)
     if (viaApi) return viaApi
   }
+  const viaSyndication = await postMentionsHandleViaSyndication(id)
+  if (viaSyndication) return viaSyndication
   return postMentionsHandleViaOembed(url)
 }
 
@@ -174,6 +210,8 @@ app.get('/api/info', (_req, res) => {
   res.json({
     amount: AMOUNT,
     shareAmount: SHARE_AMOUNT,
+    videoShareAmount: SHARE_VIDEO_AMOUNT,
+    maxPostAgeMinutes: SHARE_MAX_AGE_MINUTES,
     xHandle: X_HANDLE,
     denom: DISPLAY_DENOM,
     faucetAddress,
@@ -268,7 +306,7 @@ app.post('/api/share-claim', async (req, res) => {
   try {
     check = await postMentionsHandle(postUrl, post.id)
   } catch {
-    check = { reachable: false, mentions: false }
+    check = { reachable: false, mentions: false, createdAt: null, hasVideo: false }
   }
   if (!check.reachable) {
     rollback()
@@ -284,9 +322,27 @@ app.post('/api/share-claim', async (req, res) => {
       .json({ error: `That post doesn't mention ${X_HANDLE}.` })
   }
 
+  // Only enforced when we actually know when the post was made — the oEmbed
+  // fallback can't tell, so an unknown age is allowed through rather than
+  // silently blocking every share once that fallback is in use.
+  if (SHARE_MAX_AGE_MINUTES > 0 && check.createdAt) {
+    const ageMinutes = (now - check.createdAt.getTime()) / 60_000
+    if (ageMinutes > SHARE_MAX_AGE_MINUTES) {
+      rollback()
+      return res.status(422).json({
+        error: `That post is more than ${SHARE_MAX_AGE_MINUTES} minutes old. Share a fresh one to claim.`,
+      })
+    }
+  }
+
+  const amount = check.hasVideo ? SHARE_VIDEO_AMOUNT : SHARE_AMOUNT
   try {
-    const txHash = await dispense(address, SHARE_AMOUNT, 'Sur faucet share bonus')
-    res.json({ txHash, amount: SHARE_AMOUNT, denom: DISPLAY_DENOM })
+    const txHash = await dispense(
+      address,
+      amount,
+      check.hasVideo ? 'Sur faucet share bonus (video)' : 'Sur faucet share bonus'
+    )
+    res.json({ txHash, amount, denom: DISPLAY_DENOM, video: check.hasVideo })
   } catch (e) {
     rollback()
     console.error('share-claim failed:', e?.message || e)
@@ -307,7 +363,10 @@ await initWallet()
 app.listen(PORT, () => {
   console.log(`\n🪙  Sur faucet running on http://localhost:${PORT}`)
   console.log(`    base ${AMOUNT} ${DISPLAY_DENOM} / ${COOLDOWN_MS / 3_600_000}h`)
-  console.log(`    share bonus ${SHARE_AMOUNT} ${DISPLAY_DENOM} for posts mentioning ${X_HANDLE}`)
+  console.log(`    share bonus ${SHARE_AMOUNT} ${DISPLAY_DENOM} (${SHARE_VIDEO_AMOUNT} with video) for posts mentioning ${X_HANDLE}`)
+  if (SHARE_MAX_AGE_MINUTES > 0) {
+    console.log(`    posts must be <${SHARE_MAX_AGE_MINUTES}m old (when age is knowable)`)
+  }
   console.log(`    faucet account: ${faucetAddress}`)
   console.log(`    node RPC: ${RPC}\n`)
 })
