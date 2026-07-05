@@ -154,7 +154,7 @@ async function postMentionsHandleViaOembed(url) {
   const haystack = `${data.html || ''} ${data.author_name || ''} ${
     data.author_url || ''
   }`.toLowerCase()
-  const needle = X_HANDLE.replace(/^@/, '').toLowerCase()
+  const needle = `@${X_HANDLE.replace(/^@/, '').toLowerCase()}`
   return { reachable: true, mentions: haystack.includes(needle) }
 }
 
