@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { DirectSecp256k1HdWallet } from '@cosmjs/proto-signing'
-import { SigningStargateClient, GasPrice } from '@cosmjs/stargate'
+import { SigningStargateClient, GasPrice, calculateFee } from '@cosmjs/stargate'
 import { fromBech32 } from '@cosmjs/encoding'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -22,6 +22,11 @@ const X_HANDLE = process.env.X_HANDLE || '@SurProtocol'
 const PREFIX = process.env.ADDRESS_PREFIX || 'sur'
 const COOLDOWN_MS = Number(process.env.COOLDOWN_HOURS || 24) * 3600 * 1000
 const GAS_PRICE = process.env.GAS_PRICE || `0.025${DENOM}`
+// Fixed gas limit for a single MsgSend. cosmjs 'auto' simulates with an empty
+// signature and under-counts store writes on this chain (a bank send actually
+// uses ~92k), so txs sent with the simulated limit fail with "out of gas". Use a
+// comfortable explicit limit instead — deterministic and safely above real cost.
+const GAS_LIMIT = Number(process.env.GAS_LIMIT || 200000)
 const EXPLORER_URL = process.env.EXPLORER_URL || 'http://localhost:5173'
 const MNEMONIC = process.env.FAUCET_MNEMONIC
 
@@ -67,17 +72,32 @@ async function initWallet() {
   faucetAddress = acc.address
 }
 
-// Sign + broadcast a transfer of `sur` SUR to `address`.
-async function dispense(address, sur, memo) {
+// All sends share ONE faucet account, so they must be serialized — otherwise
+// concurrent claims grab the same account sequence and all but one fail with a
+// sequence mismatch. This promise-chain mutex runs sends strictly one at a time.
+let sendQueue = Promise.resolve()
+function dispense(address, sur, memo) {
+  const task = sendQueue.then(() => sendOnce(address, sur, memo))
+  // Keep the chain alive even if this send rejects.
+  sendQueue = task.then(
+    () => undefined,
+    () => undefined
+  )
+  return task
+}
+
+// Sign + broadcast a single transfer of `sur` SUR to `address`.
+async function sendOnce(address, sur, memo) {
   const client = await SigningStargateClient.connectWithSigner(RPC, wallet, {
     gasPrice: GasPrice.fromString(GAS_PRICE),
   })
   try {
+    const fee = calculateFee(GAS_LIMIT, GasPrice.fromString(GAS_PRICE))
     const result = await client.sendTokens(
       faucetAddress,
       address,
       [{ denom: DENOM, amount: toMicro(sur) }],
-      'auto',
+      fee,
       memo
     )
     return result.transactionHash
