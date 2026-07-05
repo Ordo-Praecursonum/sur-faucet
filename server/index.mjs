@@ -248,6 +248,21 @@ app.post('/api/share-claim', async (req, res) => {
     })
   }
 
+  // Reserve the post + bonus slot NOW, synchronously, before the network
+  // round-trip below. Verification is an `await`, which yields the event
+  // loop — reserving only after it returned would let two concurrent
+  // requests for the same tweet both pass the checks above and both get
+  // paid. Roll the reservation back if verification or the send fails.
+  shares.posts[post.id] = address
+  shares.bonus[address] = now
+  save('shares.json', shares)
+
+  const rollback = () => {
+    delete shares.posts[post.id]
+    delete shares.bonus[address]
+    save('shares.json', shares)
+  }
+
   // Verify the post actually mentions @SurProtocol.
   let check
   try {
@@ -256,28 +271,24 @@ app.post('/api/share-claim', async (req, res) => {
     check = { reachable: false, mentions: false }
   }
   if (!check.reachable) {
+    rollback()
     return res.status(502).json({
       error:
         'Could not read that post (it may be private/deleted, or X is rate-limiting). Try again shortly.',
     })
   }
   if (!check.mentions) {
+    rollback()
     return res
       .status(422)
       .json({ error: `That post doesn't mention ${X_HANDLE}.` })
   }
 
-  // Reserve the post + bonus slot before sending.
-  shares.posts[post.id] = address
-  shares.bonus[address] = now
-  save('shares.json', shares)
   try {
     const txHash = await dispense(address, SHARE_AMOUNT, 'Sur faucet share bonus')
     res.json({ txHash, amount: SHARE_AMOUNT, denom: DISPLAY_DENOM })
   } catch (e) {
-    delete shares.posts[post.id]
-    delete shares.bonus[address]
-    save('shares.json', shares)
+    rollback()
     console.error('share-claim failed:', e?.message || e)
     res
       .status(500)
